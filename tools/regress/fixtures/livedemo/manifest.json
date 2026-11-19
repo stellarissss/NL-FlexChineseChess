@@ -1,0 +1,8 @@
+{
+  "id": "livedemo",
+  "name": "反例：活随机但执行静态（应放行）",
+  "width": 9,
+  "height": 10,
+  "config_files": ["board", "ui_config"],
+  "capabilities": {"randomness": "live"}
+}

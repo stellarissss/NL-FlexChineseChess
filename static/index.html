@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#070708">
+    <title>无限制棋局 · v2.1 beta</title>
+    <link rel="preconnect" href="https://fonts.googleapis.cn">
+    <link rel="preconnect" href="https://fonts.gstatic.cn" crossorigin>
+    <!-- 字体样式表异步化：WebKit 对挂起的外部 CSS 会阻塞渲染与后续脚本执行，
+         弱网下字体源一旦变慢，整页引导就被拖死。media=print 技巧使其不阻塞，
+         加载完成后再切回 all 应用。字体加载失败只影响观感，绝不阻塞游戏。 -->
+    <link href="https://fonts.googleapis.cn/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'" onerror="this.remove()">
+    <noscript><link href="https://fonts.googleapis.cn/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet"></noscript>
+    <style>
+    html, body { height: 100vh; margin: 0; overflow: hidden; background: #070708; }
+    #app { height: 100%; }
+    /* 移动端适配：小屏放开滚动 */
+    @media (max-width: 900px) {
+        html, body { overflow-y: auto; height: auto; min-height: 100vh; }
+    }
+    /* 引导遮罩：保证任何状态下都有可见信息，绝不出现「纯黑无提示」 */
+    #boot-loader{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;
+      align-items:center;justify-content:center;gap:14px;padding:24px;
+      background:#070708;color:#d4af37;font-family:'DM Sans','Microsoft YaHei',system-ui,sans-serif;
+      text-align:center}
+    /* 兜底：万一引导脚本本身没跑起来（极窄条件），10 秒后露出静态可读提示 */
+    #boot-loader::after{content:'如果这里一直没有变化，请下拉刷新页面';position:absolute;
+      bottom:calc(18px + env(safe-area-inset-bottom));left:0;right:0;
+      font-size:11px;letter-spacing:.06em;color:#4a463c;opacity:0;animation:bootHint 1s ease 10s forwards}
+    @keyframes bootHint{to{opacity:1}}
+    @media (prefers-reduced-motion:reduce){#boot-loader::after{animation:none;opacity:1}}
+    </style>
+</head>
+<body>
+
+  <div id="boot-loader">
+    <div style="font-size:20px;letter-spacing:.08em;">正在加载对局…</div>
+    <div style="width:min(340px,70vw);height:8px;border-radius:999px;background:rgba(212,175,55,.15);overflow:hidden;border:1px solid rgba(212,175,55,.32);box-shadow:0 0 18px rgba(212,175,55,.18) inset;">
+      <div id="boot-loader-fill" style="height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#7a5a18,#d4af37,#ffe08a);transition:width .3s;"></div>
+    </div>
+    <div id="boot-loader-text" style="font-size:13px;color:#99948a;letter-spacing:.04em;">正在同步配置与棋盘…</div>
+    <div id="boot-loader-diag" style="font-size:11px;color:#5c5648;letter-spacing:.02em;line-height:1.7;max-width:min(520px,86vw);min-height:1.7em;"></div>
+    <button id="boot-retry-btn" onclick="location.reload()" style="display:none;margin-top:6px;padding:10px 26px;border-radius:999px;border:1px solid rgba(212,175,55,.5);background:rgba(212,175,55,.12);color:#d4af37;font-size:14px;letter-spacing:.08em;">重新加载</button>
+    <div style="font-size:10px;letter-spacing:.22em;color:#5c5648;text-transform:uppercase;">v2.1 beta · agent driven</div>
+  </div>
+    <div id="app"></div>
+
+    <script>
+      // ===== 引导器 v2.2 =====
+      // 设计目标只有一条：**任何失败都必须看得见、说得清、能自愈**。
+      // 1) 每个阶段打点并上报，事后能还原「卡在哪一步」；
+      // 2) 不再自动整页 reload（弱网下 reload 会造成「打开—黑屏—重载」死循环）；
+      // 3) 引导遮罩始终显示阶段与已耗时，永远不会是无信息的黑屏；
+      // 4) 失败时给出可复制的诊断行，并上报到服务端。
+      (function () {
+        var base = location.pathname.replace(/\/+$/, '');
+        if (base.slice(-11) === '/index.html') base = base.slice(0, -11);
+        window.__API_BASE__ = base;
+
+        var boot = {
+          t0: Date.now(),
+          step: 'html',
+          done: false,      // 真正 ready 之后才为 true
+          failed: false,
+          errs: [],
+          reports: 0
+        };
+        window.__boot = boot;
+
+        var txt = document.getElementById('boot-loader-text');
+        var fill = document.getElementById('boot-loader-fill');
+        var retryBtn = document.getElementById('boot-retry-btn');
+        var diag = document.getElementById('boot-loader-diag');
+
+        function elapsed() { return ((Date.now() - boot.t0) / 1000).toFixed(1); }
+        function shortUA() {
+          var ua = navigator.userAgent || '';
+          if (/iPad|Tablet/.test(ua)) return 'iPad/iOS';
+          if (/iPhone|iPod/.test(ua)) return 'iPhone/iOS';
+          if (/Android/.test(ua)) return 'Android';
+          if (/Macintosh/.test(ua)) return 'macOS';
+          return 'desktop';
+        }
+
+        function paintDiag(extra) {
+          if (!diag) return;
+          diag.textContent = '阶段 ' + boot.step + ' · ' + elapsed() + 's · ' +
+                             shortUA() + (extra ? ' · ' + extra : '');
+        }
+
+        // 前端诊断上报：失败不重试、不阻塞，纯附带信息
+        function report(kind, extra) {
+          if (boot.reports >= 6) return;
+          boot.reports++;
+          try {
+            var body = JSON.stringify(Object.assign({
+              event: kind,
+              step: boot.step,
+              elapsed_ms: Date.now() - boot.t0,
+              href: location.href.replace(/^https?:\/\/[^/]+/, ''),
+              ua: (navigator.userAgent || '').slice(0, 220),
+              vw: window.innerWidth, vh: window.innerHeight,
+              dpr: window.devicePixelRatio || 1,
+              online: navigator.onLine !== false,
+              errs: boot.errs.slice(0, 5)
+            }, extra || {}));
+            fetch(base + '/api/client_log', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: body,
+              keepalive: true
+            }).catch(function () {});
+          } catch (e) {}
+        }
+        window.__bootReport = report;
+
+        window.__bootSetProgress = function (p, msg) {
+          if (fill && !boot.failed) fill.style.width = Math.min(92, p) + '%';
+          if (txt && msg && !boot.failed) txt.textContent = msg;
+          paintDiag();
+        };
+
+        window.__bootFail = function (msg, detail) {
+          if (boot.done) return;
+          boot.failed = true;
+          if (fill) { fill.style.width = '100%'; fill.style.background = 'linear-gradient(90deg,#7a1818,#d43737,#ff8a8a)'; }
+          if (txt) txt.textContent = msg || '加载失败';
+          if (retryBtn) retryBtn.style.display = 'block';
+          if (diag) {
+            diag.textContent = '阶段 ' + boot.step + ' · ' + elapsed() + 's · ' + shortUA() +
+                               (detail ? ' · ' + detail : '');
+          }
+          report('boot_fail', { message: msg || '', detail: detail || '' });
+        };
+
+        // 引导期异常全部记录（不再静默）。资源加载失败交给各自的 onerror 处理，
+        // 这里只补一条上报，避免把「脚本 404」误报成「脚本异常」。
+        window.addEventListener('error', function (e) {
+          var tgt = e && e.target;
+          var isRes = !!(tgt && tgt.tagName && (tgt.src || tgt.href));
+          var m = isRes ? (tgt.src || tgt.href) : ((e && e.message) || '未知错误');
+          boot.errs.push(String(m).slice(0, 180));
+          if (isRes) {
+            report('res_error', { src: String(m).slice(0, 200), tag: tgt.tagName });
+            return;
+          }
+          if (!boot.done && !boot.failed) window.__bootFail('脚本异常：' + m);
+          else report('js_error', { message: String(m).slice(0, 300),
+                                    src: (e && e.filename) || '', line: (e && e.lineno) || 0 });
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e && e.reason;
+          var m = (r && (r.message || r)) || 'Promise rejected';
+          boot.errs.push(String(m).slice(0, 180));
+          if (!boot.done && !boot.failed) window.__bootFail('初始化请求失败，请重试');
+          else report('unhandled_rejection', { message: String(m).slice(0, 300) });
+        });
+
+        // iOS Safari 往返缓存（bfcache）：恢复的是冻结的 JS 状态，典型表现是
+        // 「切回来还是加载页 / 棋盘不动」。只要还没真正 ready，就整页刷新拿新连接。
+        window.addEventListener('pageshow', function (e) {
+          if (!e.persisted) return;
+          report('bfcache_resume', { done: boot.done });
+          if (!boot.done) location.reload();
+        });
+
+        // 网络恢复：自动再试一次，不用用户手动刷新
+        window.addEventListener('online', function () {
+          if (!boot.done && boot.failed) location.reload();
+        });
+
+        function createBoard() {
+          var board = document.createElement('xiangqi-board');
+          board.setAttribute('api-base', window.__API_BASE__ || '');
+          document.getElementById('app').appendChild(board);
+          boot.step = 'init';
+          paintDiag();
+          return board.init().catch(function (err) {
+            var m = (err && err.message) ? err.message : '网络异常';
+            window.__bootFail('初始化失败：' + m, m);
+          });
+        }
+
+        function loadSeq(srcs, i) {
+          if (i >= srcs.length) {
+            if (!customElements.get('xiangqi-board')) {
+              window.__bootFail('脚本内容异常，请刷新重试', 'custom element 未注册');
+              return;
+            }
+            return createBoard();
+          }
+          boot.step = 'script' + (i + 1);
+          window.__bootSetProgress(20 + i * 30, i === 0 ? '加载游戏核心…' : '加载界面引擎…');
+          var s = document.createElement('script');
+          s.src = srcs[i];
+          s.onload = function () { loadSeq(srcs, i + 1); };
+          s.onerror = function () {
+            window.__bootFail('资源加载失败，请检查网络后重试', srcs[i].split('/').pop());
+          };
+          document.head.appendChild(s);
+        }
+
+        function start() {
+          loadSeq([base + '/static/game_shared_rpg.js?v=2.2.2',
+                   base + '/static/app.js?v=2.3.7'], 0);
+        }
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', start);
+        } else {
+          start();
+        }
+      })();
+    </script>
+
+    <script>
+      (function () {
+        var l = document.getElementById('boot-loader'); if (!l) return;
+        var fill = document.getElementById('boot-loader-fill');
+        var txt = document.getElementById('boot-loader-text');
+        var retryBtn = document.getElementById('boot-retry-btn');
+        var diag = document.getElementById('boot-loader-diag');
+        var boot = window.__boot || {};
+        var ready = false;
+
+        function fin() {
+          if (!l || ready) return;
+          ready = true;
+          boot.done = true;
+          l.style.transition = 'opacity .4s';
+          l.style.opacity = '0';
+          setTimeout(function () { l.remove(); }, 460);
+          try { window.__bootReport('boot_ok'); } catch (e) {}
+        }
+        document.addEventListener('ready', fin, true);
+        // 自定义元素已就绪但 ready 事件因异常未派发时，用 DOM 探测兜底
+        var probe = setInterval(function () {
+          if (ready) { clearInterval(probe); return; }
+          var b = document.querySelector('xiangqi-board');
+          if (b && b.shadowRoot && b.shadowRoot.querySelectorAll('.piece').length) fin();
+        }, 600);
+
+        var t = 0;
+        var iv = setInterval(function () {
+          if (ready) { clearInterval(iv); return; }
+          t = Math.min(92, t + 8); fill.style.width = t + '%';
+          if (diag && boot && boot.step) {
+            diag.textContent = '阶段 ' + boot.step + ' · ' +
+              ((Date.now() - boot.t0) / 1000).toFixed(1) + 's';
+          }
+        }, 300);
+
+        // 8s：明确告知「慢」而不是「死」，降低用户误判为黑屏
+        setTimeout(function () {
+          if (ready || (boot && boot.failed)) return;
+          if (txt) txt.textContent = '网络较慢，仍在加载…（不会自动刷新，请再等一会）';
+        }, 8000);
+
+        // 20s：给出手动重试与诊断信息（绝不自动 reload，避免弱网循环）
+        setTimeout(function () {
+          if (ready || (boot && boot.failed)) return;
+          clearInterval(iv);
+          if (fill) fill.style.width = '100%';
+          if (txt) txt.textContent = '加载超时，可能是网络波动（Safari 弱网下偶发）';
+          if (retryBtn) retryBtn.style.display = 'block';
+          if (diag && boot && boot.step) {
+            diag.textContent = '阶段 ' + boot.step + ' · ' +
+              ((Date.now() - boot.t0) / 1000).toFixed(1) + 's · 可点上方按钮重试';
+          }
+          try { window.__bootReport('boot_timeout'); } catch (e) {}
+        }, 20000);
+      })();
+    </script>
+
+</body>
+</html>

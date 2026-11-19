@@ -1,0 +1,6 @@
+{
+  "_comment": "复制本文件为 config.json 并填入真实密钥；config.json 已被 .gitignore 排除，绝不入库。也可改用环境变量 DEEPSEEK_API_KEY（优先级更高）。",
+  "api_key": "sk-在这里填入你的DeepSeek密钥",
+  "model": "deepseek-flash",
+  "base_url": "https://api.deepseek.com/v1"
+}

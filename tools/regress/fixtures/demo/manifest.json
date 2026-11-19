@@ -1,0 +1,13 @@
+{
+  "id": "demo",
+  "name": "随机·异步·实时演示",
+  "description": "平台链路验证用：state_rng 随机 + 双方可动 + 每秒漂移",
+  "width": 9,
+  "height": 10,
+  "config_files": ["board", "ui_config"],
+  "capabilities": {
+    "randomness": "state",
+    "async_actions": true,
+    "realtime": {"tick_hz": 1}
+  }
+}

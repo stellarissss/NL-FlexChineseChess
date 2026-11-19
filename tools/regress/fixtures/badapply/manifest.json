@@ -1,0 +1,8 @@
+{
+  "id": "badapply",
+  "name": "反例：查询含活随机、执行却按静态规则拒绝",
+  "width": 9,
+  "height": 10,
+  "config_files": ["board", "ui_config"],
+  "capabilities": {"randomness": "live"}
+}
